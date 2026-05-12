@@ -9,3 +9,27 @@ tests/
 rec_train_set.sample.txt
 .env
 *.egg-info
+
+# IDE
+.idea/
+.vscode/
+
+# Python 虚拟环境
+.venv/
+venv/
+
+# 环境变量
+.envy
+
+# 数据文件（不追踪原始数据）
+*.pkl
+*.npy
+saved_models/
+deployed_models/
+
+# 打包文件
+*.tar.gz
+autodl_package/
+
+# uv lock
+uv.lock
