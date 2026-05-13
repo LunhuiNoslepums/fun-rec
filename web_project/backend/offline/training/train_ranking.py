@@ -1,9 +1,9 @@
 """
-精排模型训练脚本 (DeepFM)
+精排模型训练脚本 (DCN)
 
-本脚本使用预处理的精排数据训练 DeepFM 模型进行 CTR 预估。
-DeepFM 结合了因子分解机（FM）用于特征交叉，
-以及深度神经网络（DNN）用于学习高阶特征组合。
+本脚本使用预处理的精排数据训练 DCN (Deep & Cross Network) 模型进行 CTR 预估。
+DCN 使用 Cross Network 进行显式高阶特征交叉，
+同时结合 DNN 学习隐式特征交互。
 
 使用方法:
     uv run python -m offline.training.train_ranking
@@ -29,9 +29,9 @@ from offline.config import config
 
 
 def run_ranking_training():
-    """训练 DeepFM 精排模型"""
+    """训练 DCN 精排模型"""
     print("=" * 60)
-    print("DeepFM 精排模型训练")
+    print("DCN 精排模型训练")
     print("=" * 60)
     
     # 检查预处理的精排数据
@@ -66,8 +66,8 @@ def run_ranking_training():
         }
     }
     
-    # DeepFM 模型配置
-    # 所有特征同时进入 'deepfm'（FM 组件）和 'linear'（线性组件）组
+    # DCN 模型配置
+    # 所有特征同时进入 'dcn'（Cross Network）、'dnn'、'linear' 三个组件
     model_config_dict = {
         "data": {
             "dataset_name": dataset_name,
@@ -78,25 +78,27 @@ def run_ranking_training():
             "task_names": ["is_click"],  # 二分类标签
             "features": [
                 # User Features
-                {"name": "user_id", "group": ["deepfm", "linear"], "vocab_size": feature_dict["user_id"]},
-                {"name": "gender", "group": ["deepfm", "linear"], "vocab_size": feature_dict["gender"]},
-                {"name": "age", "group": ["deepfm", "linear"], "vocab_size": feature_dict["age"]},
-                {"name": "occupation", "group": ["deepfm", "linear"], "vocab_size": feature_dict["occupation"]},
-                {"name": "zip_code", "group": ["deepfm", "linear"], "vocab_size": feature_dict["zip_code"]},
+                {"name": "user_id", "group": ["dcn", "dnn", "linear"], "vocab_size": feature_dict["user_id"]},
+                {"name": "gender", "group": ["dcn", "dnn", "linear"], "vocab_size": feature_dict["gender"]},
+                {"name": "age", "group": ["dcn", "dnn", "linear"], "vocab_size": feature_dict["age"]},
+                {"name": "occupation", "group": ["dcn", "dnn", "linear"], "vocab_size": feature_dict["occupation"]},
+                {"name": "zip_code", "group": ["dcn", "dnn", "linear"], "vocab_size": feature_dict["zip_code"]},
                 
                 # Item Features
-                {"name": "movie_id", "group": ["deepfm", "linear"], "vocab_size": feature_dict["movie_id"]},
-                {"name": "genres", "group": ["deepfm", "linear"], "vocab_size": feature_dict["genres"]},
-                {"name": "isAdult", "group": ["deepfm", "linear"], "vocab_size": feature_dict["isAdult"]},
-                {"name": "startYear", "group": ["deepfm", "linear"], "vocab_size": feature_dict["startYear"]},
+                {"name": "movie_id", "group": ["dcn", "dnn", "linear"], "vocab_size": feature_dict["movie_id"]},
+                {"name": "genres", "group": ["dcn", "dnn", "linear"], "vocab_size": feature_dict["genres"]},
+                {"name": "isAdult", "group": ["dcn", "dnn", "linear"], "vocab_size": feature_dict["isAdult"]},
+                {"name": "startYear", "group": ["dcn", "dnn", "linear"], "vocab_size": feature_dict["startYear"]},
             ]
         },
         "training": {
-            "build_function": "funrec.models.deepfm.build_deepfm_model",
+            "build_function": "funrec.models.dcn.build_dcn_model",
             "model_params": {
-                "dnn_units": [128, 64, 32],  # DNN 隐藏层
+                "num_cross_layers": 3,     # Cross Network 层数
+                "dnn_units": [128, 64, 32], # DNN 隐藏层
                 "dropout_rate": 0.1,
-                "linear_logits": True,  # 包含线性 (一阶) 项
+                "l2_reg": 1e-5,            # L2 正则化
+                "linear_logits": True,     # 包含线性 (一阶) 项
             },
             "optimizer": "adam",
             "optimizer_params": {"learning_rate": config.LEARNING_RATE},
@@ -138,10 +140,10 @@ def run_ranking_training():
         print(f"    - {fc.name}: vocab_size={fc.vocab_size}, emb_dim={fc.emb_dim}")
     
     # 训练模型
-    print("\n训练 DeepFM 模型...")
+    print("\n训练 DCN 模型...")
     models = train_model(cfg.training, feature_columns, processed_data)
-    
-    # DeepFM 返回 (main_model, None, None)，因为它不是双塔模型
+
+    # DCN 返回 (main_model, None, None)，因为它不是双塔模型
     main_model = models[0]
     
     # 评估模型
