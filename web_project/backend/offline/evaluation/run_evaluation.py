@@ -36,6 +36,8 @@ _layers_mod = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_layers_mod)
 DNNs = _layers_mod.DNNs
 FM = _layers_mod.FM
+DCN = _layers_mod.DCN
+DinAttentionLayer = _layers_mod.DinAttentionLayer
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -176,9 +178,9 @@ def group_auc(labels, preds, user_ids):
     return weighted_auc / total_weight if total_weight > 0 else 0.0
 
 
-def evaluate_ranking():
+def evaluate_ranking(model_dir="ranking_model", model_label="DeepFM", has_seq=False):
     print("\n" + "=" * 60)
-    print("精排模型评估 (DeepFM)")
+    print(f"精排模型评估 ({model_label})")
     print("=" * 60)
 
     # 1. 加载测试数据
@@ -190,17 +192,32 @@ def evaluate_ranking():
     print(f"    正样本比例: {pos_ratio:.2%}")
 
     # 2. 加载模型
-    print("\n[2/4] 加载精排模型...")
+    print(f"\n[2/4] 加载精排模型 ({model_label})...")
+    model_path = SAVED_MODELS_DIR / model_dir
     model = tf.keras.models.load_model(
-        str(SAVED_MODELS_DIR / "ranking_model"),
-        custom_objects={"DNNs": DNNs, "FM": FM},
+        str(model_path),
+        custom_objects={"DNNs": DNNs, "FM": FM, "DCN": DCN, "DinAttentionLayer": DinAttentionLayer},
     )
 
     # 3. 预测 CTR
     print("\n[3/4] CTR 预测...")
-    feature_cols = ["user_id", "gender", "age", "occupation", "zip_code",
-                    "movie_id", "genres", "isAdult", "startYear"]
-    model_input = {col: test[col].reshape(-1, 1) for col in feature_cols}
+    if has_seq:
+        feature_cols = ["user_id", "gender", "age", "occupation", "zip_code",
+                        "activity_bucket",
+                        "movie_id", "genres", "isAdult", "startYear",
+                        "genre_count", "popularity_bucket", "quality_bucket",
+                        "runtime_bucket", "movie_age_bucket", "director_bucket",
+                        "hist_movie_id"]
+        model_input = {}
+        for col in feature_cols:
+            if col == "hist_movie_id":
+                model_input[col] = test[col].reshape(-1, 10)
+            else:
+                model_input[col] = test[col].reshape(-1, 1)
+    else:
+        feature_cols = ["user_id", "gender", "age", "occupation", "zip_code",
+                        "movie_id", "genres", "isAdult", "startYear"]
+        model_input = {col: test[col].reshape(-1, 1) for col in feature_cols}
     preds = model.predict(model_input, batch_size=1024, verbose=0).flatten()
     print(f"    预测完成: {len(preds)} 个样本")
 
@@ -211,7 +228,7 @@ def evaluate_ranking():
     gauc = group_auc(labels, preds, test["user_id_original"])
 
     print("\n" + "-" * 40)
-    print("精排评估结果:")
+    print(f"{model_label} 精排评估结果:")
     print("-" * 40)
     print(f"  AUC:  {auc:.4f}")
     print(f"  gAUC: {gauc:.4f}")
@@ -228,7 +245,28 @@ if __name__ == "__main__":
     os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"  # 关闭 TF 非关键日志
 
     retrieval_metrics = evaluate_retrieval()
-    ranking_metrics = evaluate_ranking()
+
+    # 精排对比：DeepFM vs DCN
+    dcn_metrics = evaluate_ranking("ranking_model", "DCN (3 epoch)")
+
+    # 恢复 DeepFM 模型并评估
+    import shutil
+    deepfm_path = SAVED_MODELS_DIR / "ranking_model_deepfm"
+    dcn_path = SAVED_MODELS_DIR / "ranking_model"
+    if deepfm_path.exists():
+        # 临时把 DCN 移开，DeepFM 移回来
+        tmp_dcn = SAVED_MODELS_DIR / "ranking_model_dcn_tmp"
+        if dcn_path.exists():
+            shutil.move(str(dcn_path), str(tmp_dcn))
+        shutil.move(str(deepfm_path), str(dcn_path))
+        deepfm_metrics = evaluate_ranking("ranking_model", "DeepFM (3 epoch)")
+        # 恢复原样
+        shutil.move(str(dcn_path), str(deepfm_path))
+        if tmp_dcn.exists():
+            shutil.move(str(tmp_dcn), str(dcn_path))
+    else:
+        print("\nDeepFM 模型未找到，跳过对比")
+        deepfm_metrics = {"auc": 0, "gauc": 0}
 
     print("\n" + "=" * 60)
     print("评估完成!")
@@ -238,6 +276,15 @@ if __name__ == "__main__":
         print(f"  HitRate@{k} = {np.mean(retrieval_metrics[f'hit_rate@{k}']):.4f}"
               f"   NDCG@{k} = {np.mean(retrieval_metrics[f'ndcg@{k}']):.4f}"
               f"   Precision@{k} = {np.mean(retrieval_metrics[f'precision@{k}']):.4f}")
-    print(f"\n精排指标:")
-    print(f"  AUC  = {ranking_metrics['auc']:.4f}")
-    print(f"  gAUC = {ranking_metrics['gauc']:.4f}")
+    # MLP+DIN 评估（包含 hist_movie_id 序列特征和 DIN 注意力）
+    mlp_din_path = SAVED_MODELS_DIR / "ranking_model_mlp_din"
+    if mlp_din_path.exists():
+        mlp_din_metrics = evaluate_ranking("ranking_model_mlp_din", "MLP+DIN", has_seq=True)
+    else:
+        print("\nMLP+DIN 模型未找到，跳过")
+        mlp_din_metrics = {"auc": 0, "gauc": 0}
+
+    print(f"\n精排对比:")
+    print(f"  DeepFM (3 epoch):  AUC={deepfm_metrics['auc']:.4f}, gAUC={deepfm_metrics['gauc']:.4f}")
+    print(f"  DCN    (3 epoch):  AUC={dcn_metrics['auc']:.4f}, gAUC={dcn_metrics['gauc']:.4f}")
+    print(f"  MLP+DIN:           AUC={mlp_din_metrics['auc']:.4f}, gAUC={mlp_din_metrics['gauc']:.4f}")
