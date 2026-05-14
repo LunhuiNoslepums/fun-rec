@@ -248,6 +248,34 @@ def process_features_for_ranking(df_movies, df_ratings, df_users, df_title_crew=
     df_merged["user_id"] = df_merged["user_id_enc"]
     df_merged["movie_id"] = df_merged["movie_id_enc"]
 
+    # ── 构建用户行为序列 (hist_movie_id) ──
+    print("构建用户行为序列 (hist_movie_id, max_len=10)...")
+    df_merged = df_merged.sort_values(["user_id_original", "timestamp"])
+
+    max_seq_len = 10
+    padding_value = 0
+    user_histories = {}
+    hist_movie_id_list = []
+
+    for idx, row in df_merged.iterrows():
+        uid = row["user_id_original"]
+        mid = row["movie_id"]  # 已经赋值为 encoded movie_id
+
+        # 当前记录的历史 = 之前看过的所有电影（排除当前电影，防 label leakage）
+        history = user_histories.get(uid, [])
+
+        # 左 padding 到 max_seq_len
+        if len(history) >= max_seq_len:
+            padded = history[-max_seq_len:]
+        else:
+            padded = [padding_value] * (max_seq_len - len(history)) + history
+        hist_movie_id_list.append(padded)
+
+        # 将当前电影加入用户历史（供下条记录使用）
+        user_histories.setdefault(uid, []).append(mid)
+
+    df_merged["hist_movie_id"] = hist_movie_id_list
+
     return df_merged, user_vocab, movie_vocab
 
 
@@ -376,6 +404,7 @@ def generate_negative_samples(
                         "occupation": row["occupation"],
                         "zip_code": row["zip_code"],
                         "activity_bucket": row["activity_bucket"],
+                        "hist_movie_id": row["hist_movie_id"],
                         "movie_id": neg_movie_id,
                         "movie_id_original": movie_feats.get("movie_id_original", neg_movie_id),
                         "genres": movie_feats.get("genres", 0),
@@ -403,6 +432,7 @@ def generate_negative_samples(
                    "movie_id", "genres", "isAdult", "startYear",
                    "genre_count", "popularity_bucket", "quality_bucket",
                    "runtime_bucket", "movie_age_bucket", "director_bucket",
+                   "hist_movie_id",
                    "is_click", "timestamp", "user_id_original"]
     all_samples = [positive_samples[output_cols]]
     
@@ -415,7 +445,7 @@ def generate_negative_samples(
     
     df_final = pd.concat(all_samples, ignore_index=True)
     
-    # 确保所有列为整数类型
+    # 确保所有列为整数类型 (除 hist_movie_id 是序列外)
     feature_cols = ["user_id", "gender", "age", "occupation", "zip_code",
                     "activity_bucket",
                     "movie_id", "genres", "isAdult", "startYear",
@@ -467,13 +497,17 @@ def convert_to_dict(df, feature_columns, label_column="is_click"):
     """将 DataFrame 转换为用于模型训练的字典格式"""
     result = {}
     for col in feature_columns:
-        result[col] = df[col].values.astype(np.int32)
+        if col == "hist_movie_id":
+            # 序列列：已经是列表形式，直接转为 2D numpy array
+            result[col] = np.stack(df[col].values).astype(np.int32)
+        else:
+            result[col] = df[col].values.astype(np.int32)
     result[label_column] = df[label_column].values.astype(np.int32)
-    
+
     # 保留 user_id_original 用于 gAUC 评估
     if "user_id_original" in df.columns:
         result["user_id_original"] = df["user_id_original"].values
-    
+
     return result
 
 
@@ -518,7 +552,8 @@ def run_ranking_preprocessing(
                         "activity_bucket",
                         "movie_id", "genres", "isAdult", "startYear",
                         "genre_count", "popularity_bucket", "quality_bucket",
-                        "runtime_bucket", "movie_age_bucket", "director_bucket"]
+                        "runtime_bucket", "movie_age_bucket", "director_bucket",
+                        "hist_movie_id"]
     
     train_data = convert_to_dict(train_df, feature_columns, "is_click")
     test_data = convert_to_dict(test_df, feature_columns, "is_click")
