@@ -61,33 +61,23 @@ class DinAttentionLayer(tf.keras.layers.Layer):
     """DIN 注意力层: query 与 keys 的加性注意力"""
     def __init__(self, att_units=(80, 40), **kwargs):
         super().__init__(**kwargs)
-        self.att_units = att_units
-        self.ffn = None
+        self.att_units = list(att_units)
 
     def build(self, input_shape):
-        # input_shape: [query_shape, keys_shape]
-        query_dim = input_shape[0][-1]  # D
-        # 注意力 FFN: concat(q, k, q-k, q*k) → FFN → score
+        # input_shape: [query_shape, keys_shape], 接收列表输入
         self.ffn = tf.keras.Sequential([
             tf.keras.layers.Dense(unit, activation="relu")
             for unit in self.att_units
         ] + [tf.keras.layers.Dense(1)])
         super().build(input_shape)
 
-    def call(self, query, keys, mask=None):
-        # query: (B, 1, D)
-        # keys:  (B, L, D)
+    def call(self, inputs, mask=None):
+        query, keys = inputs[0], inputs[1]  # query: (B, 1, D), keys: (B, L, D)
         _, L, D = keys.shape
         q = tf.tile(query, [1, L, 1])  # (B, L, D)
 
         # 经典 DIN 特征交互: concat(q, k, q-k, q*k)
-        att_input = tf.concat([
-            q,
-            keys,
-            q - keys,
-            q * keys,
-        ], axis=-1)  # (B, L, 4*D)
-
+        att_input = tf.concat([q, keys, q - keys, q * keys], axis=-1)  # (B, L, 4*D)
         scores = self.ffn(att_input)  # (B, L, 1)
         scores = tf.squeeze(scores, axis=-1)  # (B, L)
 
@@ -96,8 +86,7 @@ class DinAttentionLayer(tf.keras.layers.Layer):
 
         att_weights = tf.nn.softmax(scores, axis=-1)  # (B, L)
         att_weights = tf.expand_dims(att_weights, axis=-1)  # (B, L, 1)
-        output = tf.reduce_sum(att_weights * keys, axis=1)  # (B, D)
-        return output
+        return tf.reduce_sum(att_weights * keys, axis=1)  # (B, D)
 
 
 class DNNs(tf.keras.layers.Layer):
@@ -178,7 +167,7 @@ hist_keys = hist_embedding(inputs["hist_movie_id"])  # (B, 10, D)
 # mask: padding 位置 (0) 不参与 attention
 hist_mask = tf.cast(inputs["hist_movie_id"] > 0, tf.bool)  # (B, 10)
 
-din_out = DinAttentionLayer(name="din_attention")(movie_query, hist_keys, mask=hist_mask)
+din_out = DinAttentionLayer(name="din_attention")([movie_query, hist_keys], mask=hist_mask)
 din_logit = tf.keras.layers.Dense(64, activation="relu")(din_out)
 din_logit = tf.keras.layers.Dense(1, name="din_final")(din_logit)  # (B, 1)
 
