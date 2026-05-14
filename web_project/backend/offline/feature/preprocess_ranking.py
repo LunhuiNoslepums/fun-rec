@@ -26,6 +26,9 @@ from collections import defaultdict
 from sklearn.preprocessing import LabelEncoder
 from tqdm import tqdm
 
+# 分桶辅助常量
+current_year = 2026
+
 from offline.config import config
 
 
@@ -36,43 +39,130 @@ def load_raw_data():
         df_movies = pd.read_pickle(config.DATASET_DIR / "movies.pkl")
         df_ratings = pd.read_pickle(config.DATASET_DIR / "ratings.pkl")
         df_users = pd.read_pickle(config.DATASET_DIR / "users.pkl")
-        return df_movies, df_ratings, df_users
+        # 新增：加载电影元数据（导演信息）
+        movie_metadata_path = config.DATASET_DIR / "movie_metadata.pkl"
+        if movie_metadata_path.exists():
+            with open(movie_metadata_path, "rb") as f:
+                movie_metadata = pickle.load(f)
+            df_title_crew = movie_metadata.get("title_crew")
+        else:
+            df_title_crew = None
+        return df_movies, df_ratings, df_users, df_title_crew
     except FileNotFoundError:
         print(f"数据文件不存在: {config.DATASET_DIR}")
         sys.exit(1)
 
 
-def process_features_for_ranking(df_movies, df_ratings, df_users):
+def process_features_for_ranking(df_movies, df_ratings, df_users, df_title_crew=None):
     """
     为精排模型处理特征
-    
+
     Returns:
         df_merged: 包含所有特征和标签的 DataFrame
         user_vocab: 用户特征词表
         movie_vocab: 电影特征词表
     """
     print("处理特征...")
-    
+
     # 选择列
     user_columns = ["user_id", "gender", "age", "occupation", "zip_code"]
-    movie_columns = ["movie_id", "genres", "isAdult", "startYear"]
+    movie_columns = ["movie_id", "genres", "isAdult", "startYear",
+                     "averageRating", "numVotes", "runtimeMinutes", "imdb_id"]
     ratings_columns = ["user_id", "movie_id", "rating", "timestamp"]
-    
+
     df_users = df_users[user_columns].copy()
-    df_movies = df_movies[["movie_id", "genres", "isAdult", "startYear"]].copy()
-    
+    df_movies = df_movies[movie_columns].copy()
+
+    # 新增: 统计类型数量（在分割前）
+    df_movies['genre_count'] = df_movies['genres'].str.split('|').str.len()
+
     # 处理类型 - 为简化精排取第一个类型
     # (DeepFM 期望标量特征，而非序列)
     df_movies['genres'] = df_movies['genres'].str.split("|").str[0]
     df_movies['isAdult'] = df_movies['isAdult'].fillna(False)
     df_movies['startYear'] = df_movies['startYear'].fillna(0)
-    
+
+    # 新增: 处理数值特征并分桶
+    # popularity_bucket (基于 numVotes)
+    df_movies['numVotes'] = pd.to_numeric(df_movies['numVotes'], errors='coerce').fillna(0)
+    pop_bins = [-1, 100, 1000, 10000, 100000, float('inf')]
+    pop_labels = ['unknown', 'very_low', 'low', 'medium', 'high', 'very_high']
+    df_movies['popularity_bucket'] = pd.cut(
+        df_movies['numVotes'], bins=pop_bins, labels=pop_labels, right=True
+    )
+    df_movies['popularity_bucket'] = df_movies['popularity_bucket'].cat.add_categories('unknown').fillna('unknown')
+
+    # quality_bucket (基于 averageRating)
+    df_movies['averageRating'] = df_movies['averageRating'].fillna(0)
+    qual_bins = [-1, 4, 5, 6, 7, 10]
+    qual_labels = ['unknown', 'low', 'medium_low', 'medium', 'high', 'very_high']
+    df_movies['quality_bucket'] = pd.cut(
+        df_movies['averageRating'], bins=qual_bins, labels=qual_labels, right=True
+    )
+    df_movies['quality_bucket'] = df_movies['quality_bucket'].cat.add_categories('unknown').fillna('unknown')
+
+    # runtime_bucket
+    df_movies['runtimeMinutes'] = pd.to_numeric(df_movies['runtimeMinutes'], errors='coerce').fillna(0)
+    runtime_bins = [-1, 1, 60, 90, 120, 180, float('inf')]
+    runtime_labels = ['unknown', 'short', 'medium', 'long', 'very_long', 'epic']
+    df_movies['runtime_bucket'] = pd.cut(
+        df_movies['runtimeMinutes'], bins=runtime_bins, labels=runtime_labels, right=True
+    )
+    df_movies['runtime_bucket'] = df_movies['runtime_bucket'].cat.add_categories('unknown').fillna('unknown')
+
+    # movie_age_bucket (startYear → 2026 年差)
+    df_movies['startYear_num'] = pd.to_numeric(df_movies['startYear'], errors='coerce').fillna(current_year)
+    df_movies['movie_age'] = current_year - df_movies['startYear_num']
+    age_bins = [-1, 5, 10, 20, 30, float('inf')]
+    age_labels = ['unknown', 'new', 'recent', 'moderate', 'old', 'classic']
+    df_movies['movie_age_bucket'] = pd.cut(
+        df_movies['movie_age'], bins=age_bins, labels=age_labels, right=True
+    )
+    df_movies['movie_age_bucket'] = df_movies['movie_age_bucket'].cat.add_categories('unknown').fillna('unknown')
+
+    # director_bucket (基于导演在数据集中作品数)
+    if df_title_crew is not None:
+        df_title_crew['directors'] = df_title_crew['directors'].fillna('')
+        all_directors = df_title_crew['directors'].str.split(',').explode()
+        all_directors = all_directors[all_directors != '']
+        director_freq = all_directors.value_counts().to_dict()
+        director_map = df_title_crew[['tconst', 'directors']].copy()
+        director_map['first_director'] = director_map['directors'].str.split(',').str[0]
+        director_map.loc[director_map['first_director'] == '', 'first_director'] = None
+        director_map['director_movie_count'] = director_map['first_director'].map(director_freq).fillna(0)
+        # 合并到电影表
+        df_movies = df_movies.merge(
+            director_map[['tconst', 'director_movie_count']],
+            left_on='imdb_id', right_on='tconst', how='left'
+        )
+    else:
+        df_movies['director_movie_count'] = 0
+    df_movies['director_movie_count'] = df_movies['director_movie_count'].fillna(0)
+    dir_bins = [-1, 0, 1, 2, 5, 20, float('inf')]
+    dir_labels = ['unknown', 'new', 'occasional', 'regular', 'prolific', 'top']
+    df_movies['director_bucket'] = pd.cut(
+        df_movies['director_movie_count'], bins=dir_bins, labels=dir_labels, right=True
+    )
+    df_movies['director_bucket'] = df_movies['director_bucket'].cat.add_categories('unknown').fillna('unknown')
+
     df_ratings = df_ratings[ratings_columns].copy()
     
     # 编码用户特征
     print("编码用户特征...")
     user_vocab = {}
-    user_sparse_feature_columns = ["user_id", "gender", "age", "occupation", "zip_code"]
+    # 新增: activity_bucket 从 ratings 表计算
+    user_activity = df_ratings.groupby('user_id').size().reset_index(name='rating_count')
+    df_users = df_users.merge(user_activity, on='user_id', how='left')
+    df_users['rating_count'] = df_users['rating_count'].fillna(0)
+    act_bins = [-1, 50, 200, 500, float('inf')]
+    act_labels = ['low', 'medium', 'high', 'very_high']
+    df_users['activity_bucket'] = pd.cut(
+        df_users['rating_count'], bins=act_bins, labels=act_labels, right=True
+    )
+    df_users['activity_bucket'] = df_users['activity_bucket'].cat.add_categories('unknown').fillna('unknown')
+
+    user_sparse_feature_columns = ["user_id", "gender", "age", "occupation", "zip_code",
+                                    "activity_bucket"]
     
     for feat_name in user_sparse_feature_columns:
         label_encoder = LabelEncoder()
@@ -82,13 +172,20 @@ def process_features_for_ranking(df_movies, df_ratings, df_users):
     # 编码电影特征
     print("编码电影特征...")
     movie_vocab = {}
-    movie_sparse_feature_columns = ["movie_id", "genres", "isAdult", "startYear"]
-    
+    movie_sparse_feature_columns = ["movie_id", "genres", "isAdult", "startYear",
+                                     "genre_count", "popularity_bucket", "quality_bucket",
+                                     "runtime_bucket", "movie_age_bucket", "director_bucket"]
+
     for feat_name in movie_sparse_feature_columns:
         label_encoder = LabelEncoder()
         # 处理潜在的 NaN 值
-        df_movies[feat_name] = df_movies[feat_name].fillna("unknown" if df_movies[feat_name].dtype == object else 0)
-        df_movies[feat_name + "_encoded"] = label_encoder.fit_transform(df_movies[feat_name].astype(str)) + 1
+        if feat_name in df_movies.columns:
+            df_movies[feat_name] = df_movies[feat_name].fillna("unknown" if df_movies[feat_name].dtype == object else 0)
+            df_movies[feat_name + "_encoded"] = label_encoder.fit_transform(df_movies[feat_name].astype(str)) + 1
+        else:
+            print(f"  ⚠ 特征 {feat_name} 不在数据中，使用默认值 1")
+            df_movies[feat_name + "_encoded"] = 1
+            label_encoder.classes_ = np.array(["unknown"])
         movie_vocab[feat_name] = label_encoder.classes_
     
     # 计算用户平均评分，用于生成标签
@@ -112,19 +209,25 @@ def process_features_for_ranking(df_movies, df_ratings, df_users):
     
     # 合并所有特征
     print("合并特征...")
+    user_merge_cols = ["user_id", "user_id_encoded", "gender_encoded", "age_encoded",
+                       "occupation_encoded", "zip_code_encoded", "activity_bucket_encoded"]
     df_merged = df_ratings.merge(
-        df_users[["user_id", "user_id_encoded", "gender_encoded", "age_encoded", 
-                  "occupation_encoded", "zip_code_encoded"]],
-        on="user_id", 
+        df_users[user_merge_cols],
+        on="user_id",
         how="left"
     )
+
+    movie_merge_cols = ["movie_id", "movie_id_encoded", "genres_encoded",
+                        "isAdult_encoded", "startYear_encoded",
+                        "genre_count_encoded", "popularity_bucket_encoded",
+                        "quality_bucket_encoded", "runtime_bucket_encoded",
+                        "movie_age_bucket_encoded", "director_bucket_encoded"]
     df_merged = df_merged.merge(
-        df_movies[["movie_id", "movie_id_encoded", "genres_encoded", 
-                   "isAdult_encoded", "startYear_encoded"]],
+        df_movies[movie_merge_cols],
         on="movie_id",
         how="left"
     )
-    
+
     # 重命名编码列为最终名称
     df_merged = df_merged.rename(columns={
         "user_id_encoded": "user_id_enc",
@@ -132,18 +235,25 @@ def process_features_for_ranking(df_movies, df_ratings, df_users):
         "age_encoded": "age",
         "occupation_encoded": "occupation",
         "zip_code_encoded": "zip_code",
+        "activity_bucket_encoded": "activity_bucket",
         "movie_id_encoded": "movie_id_enc",
         "genres_encoded": "genres",
         "isAdult_encoded": "isAdult",
         "startYear_encoded": "startYear",
+        "genre_count_encoded": "genre_count",
+        "popularity_bucket_encoded": "popularity_bucket",
+        "quality_bucket_encoded": "quality_bucket",
+        "runtime_bucket_encoded": "runtime_bucket",
+        "movie_age_bucket_encoded": "movie_age_bucket",
+        "director_bucket_encoded": "director_bucket",
     })
-    
+
     # 保留原始 ID 用于负采样，编码后的 ID 用于模型
     df_merged["user_id_original"] = df_merged["user_id"]
     df_merged["movie_id_original"] = df_merged["movie_id"]
     df_merged["user_id"] = df_merged["user_id_enc"]
     df_merged["movie_id"] = df_merged["movie_id_enc"]
-    
+
     return df_merged, user_vocab, movie_vocab
 
 
@@ -177,7 +287,10 @@ def generate_negative_samples(
     all_movie_ids = set(range(1, len(movie_vocab["movie_id"]) + 1))
     
     # 获取用于负采样的电影特征
-    movie_features = df_merged[["movie_id", "genres", "isAdult", "startYear", "movie_id_original"]].drop_duplicates()
+    movie_features = df_merged[["movie_id", "genres", "isAdult", "startYear",
+                                 "genre_count", "popularity_bucket", "quality_bucket",
+                                 "runtime_bucket", "movie_age_bucket", "director_bucket",
+                                 "movie_id_original"]].drop_duplicates()
     movie_features_dict = movie_features.set_index("movie_id").to_dict("index")
     
     # 分离正样本和困难负样本（曝光但未点击）
@@ -268,11 +381,18 @@ def generate_negative_samples(
                         "age": row["age"],
                         "occupation": row["occupation"],
                         "zip_code": row["zip_code"],
+                        "activity_bucket": row["activity_bucket"],
                         "movie_id": neg_movie_id,
                         "movie_id_original": movie_feats.get("movie_id_original", neg_movie_id),
                         "genres": movie_feats.get("genres", 0),
                         "isAdult": movie_feats.get("isAdult", 0),
                         "startYear": movie_feats.get("startYear", 0),
+                        "genre_count": movie_feats.get("genre_count", 1),
+                        "popularity_bucket": movie_feats.get("popularity_bucket", 0),
+                        "quality_bucket": movie_feats.get("quality_bucket", 0),
+                        "runtime_bucket": movie_feats.get("runtime_bucket", 0),
+                        "movie_age_bucket": movie_feats.get("movie_age_bucket", 0),
+                        "director_bucket": movie_feats.get("director_bucket", 0),
                         "is_click": 0,
                         "rating": 0,
                         "timestamp": row["timestamp"],
@@ -285,7 +405,10 @@ def generate_negative_samples(
     
     # 合并正样本和负样本
     output_cols = ["user_id", "gender", "age", "occupation", "zip_code",
-                   "movie_id", "genres", "isAdult", "startYear", 
+                   "activity_bucket",
+                   "movie_id", "genres", "isAdult", "startYear",
+                   "genre_count", "popularity_bucket", "quality_bucket",
+                   "runtime_bucket", "movie_age_bucket", "director_bucket",
                    "is_click", "timestamp", "user_id_original"]
     all_samples = [positive_samples[output_cols]]
     
@@ -300,7 +423,11 @@ def generate_negative_samples(
     
     # 确保所有列为整数类型
     feature_cols = ["user_id", "gender", "age", "occupation", "zip_code",
-                    "movie_id", "genres", "isAdult", "startYear", "is_click"]
+                    "activity_bucket",
+                    "movie_id", "genres", "isAdult", "startYear",
+                    "genre_count", "popularity_bucket", "quality_bucket",
+                    "runtime_bucket", "movie_age_bucket", "director_bucket",
+                    "is_click"]
     for col in feature_cols:
         df_final[col] = df_final[col].fillna(0).astype(int)
     
@@ -374,11 +501,11 @@ def run_ranking_preprocessing(
     print("=" * 60)
     
     # 1. 加载原始数据
-    df_movies, df_ratings, df_users = load_raw_data()
-    
+    df_movies, df_ratings, df_users, df_title_crew = load_raw_data()
+
     # 2. 处理特征
     df_merged, user_vocab, movie_vocab = process_features_for_ranking(
-        df_movies, df_ratings, df_users
+        df_movies, df_ratings, df_users, df_title_crew
     )
     
     # 3. 生成负样本
@@ -394,7 +521,10 @@ def run_ranking_preprocessing(
     
     # 5. 转换为字典格式
     feature_columns = ["user_id", "gender", "age", "occupation", "zip_code",
-                       "movie_id", "genres", "isAdult", "startYear"]
+                        "activity_bucket",
+                        "movie_id", "genres", "isAdult", "startYear",
+                        "genre_count", "popularity_bucket", "quality_bucket",
+                        "runtime_bucket", "movie_age_bucket", "director_bucket"]
     
     train_data = convert_to_dict(train_df, feature_columns, "is_click")
     test_data = convert_to_dict(test_df, feature_columns, "is_click")

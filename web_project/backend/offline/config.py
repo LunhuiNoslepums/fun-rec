@@ -22,8 +22,8 @@ class Config:
     NEG_SAMPLE_SIZE = 20   # 负采样大小
     
     # 训练配置
-    BATCH_SIZE = 128
-    EPOCHS = 3
+    BATCH_SIZE = 512
+    EPOCHS = 15
     LEARNING_RATE = 0.001
     
     # 模型部署目录（用于在线服务加载模型）

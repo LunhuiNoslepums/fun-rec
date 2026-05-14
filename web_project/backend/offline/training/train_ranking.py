@@ -83,12 +83,19 @@ def run_ranking_training():
                 {"name": "age", "group": ["deepfm", "linear"], "vocab_size": feature_dict["age"]},
                 {"name": "occupation", "group": ["deepfm", "linear"], "vocab_size": feature_dict["occupation"]},
                 {"name": "zip_code", "group": ["deepfm", "linear"], "vocab_size": feature_dict["zip_code"]},
-                
+                {"name": "activity_bucket", "group": ["deepfm", "linear"], "vocab_size": feature_dict["activity_bucket"]},
+
                 # Item Features
                 {"name": "movie_id", "group": ["deepfm", "linear"], "vocab_size": feature_dict["movie_id"]},
                 {"name": "genres", "group": ["deepfm", "linear"], "vocab_size": feature_dict["genres"]},
                 {"name": "isAdult", "group": ["deepfm", "linear"], "vocab_size": feature_dict["isAdult"]},
                 {"name": "startYear", "group": ["deepfm", "linear"], "vocab_size": feature_dict["startYear"]},
+                {"name": "genre_count", "group": ["deepfm", "linear"], "vocab_size": feature_dict["genre_count"]},
+                {"name": "popularity_bucket", "group": ["deepfm", "linear"], "vocab_size": feature_dict["popularity_bucket"]},
+                {"name": "quality_bucket", "group": ["deepfm", "linear"], "vocab_size": feature_dict["quality_bucket"]},
+                {"name": "runtime_bucket", "group": ["deepfm", "linear"], "vocab_size": feature_dict["runtime_bucket"]},
+                {"name": "movie_age_bucket", "group": ["deepfm", "linear"], "vocab_size": feature_dict["movie_age_bucket"]},
+                {"name": "director_bucket", "group": ["deepfm", "linear"], "vocab_size": feature_dict["director_bucket"]},
             ]
         },
         "training": {
