@@ -85,21 +85,19 @@ def process_features_for_ranking(df_movies, df_ratings, df_users, df_title_crew=
     # 新增: 处理数值特征并分桶
     # popularity_bucket (基于 numVotes)
     df_movies['numVotes'] = pd.to_numeric(df_movies['numVotes'], errors='coerce').fillna(0)
-    pop_bins = [-1, 100, 1000, 10000, 100000, float('inf')]
+    pop_bins = [-1, 0, 100, 1000, 10000, 100000, float('inf')]
     pop_labels = ['unknown', 'very_low', 'low', 'medium', 'high', 'very_high']
     df_movies['popularity_bucket'] = pd.cut(
         df_movies['numVotes'], bins=pop_bins, labels=pop_labels, right=True
     )
-    df_movies['popularity_bucket'] = df_movies['popularity_bucket'].cat.add_categories('unknown').fillna('unknown')
 
     # quality_bucket (基于 averageRating)
     df_movies['averageRating'] = df_movies['averageRating'].fillna(0)
-    qual_bins = [-1, 4, 5, 6, 7, 10]
+    qual_bins = [-1, 0, 4, 5, 6, 7, 10]
     qual_labels = ['unknown', 'low', 'medium_low', 'medium', 'high', 'very_high']
     df_movies['quality_bucket'] = pd.cut(
         df_movies['averageRating'], bins=qual_bins, labels=qual_labels, right=True
     )
-    df_movies['quality_bucket'] = df_movies['quality_bucket'].cat.add_categories('unknown').fillna('unknown')
 
     # runtime_bucket
     df_movies['runtimeMinutes'] = pd.to_numeric(df_movies['runtimeMinutes'], errors='coerce').fillna(0)
@@ -108,17 +106,15 @@ def process_features_for_ranking(df_movies, df_ratings, df_users, df_title_crew=
     df_movies['runtime_bucket'] = pd.cut(
         df_movies['runtimeMinutes'], bins=runtime_bins, labels=runtime_labels, right=True
     )
-    df_movies['runtime_bucket'] = df_movies['runtime_bucket'].cat.add_categories('unknown').fillna('unknown')
 
     # movie_age_bucket (startYear → 2026 年差)
     df_movies['startYear_num'] = pd.to_numeric(df_movies['startYear'], errors='coerce').fillna(current_year)
     df_movies['movie_age'] = current_year - df_movies['startYear_num']
-    age_bins = [-1, 5, 10, 20, 30, float('inf')]
+    age_bins = [-1, 0, 5, 10, 20, 30, float('inf')]
     age_labels = ['unknown', 'new', 'recent', 'moderate', 'old', 'classic']
     df_movies['movie_age_bucket'] = pd.cut(
         df_movies['movie_age'], bins=age_bins, labels=age_labels, right=True
     )
-    df_movies['movie_age_bucket'] = df_movies['movie_age_bucket'].cat.add_categories('unknown').fillna('unknown')
 
     # director_bucket (基于导演在数据集中作品数)
     if df_title_crew is not None:
@@ -143,7 +139,6 @@ def process_features_for_ranking(df_movies, df_ratings, df_users, df_title_crew=
     df_movies['director_bucket'] = pd.cut(
         df_movies['director_movie_count'], bins=dir_bins, labels=dir_labels, right=True
     )
-    df_movies['director_bucket'] = df_movies['director_bucket'].cat.add_categories('unknown').fillna('unknown')
 
     df_ratings = df_ratings[ratings_columns].copy()
     
@@ -159,7 +154,6 @@ def process_features_for_ranking(df_movies, df_ratings, df_users, df_title_crew=
     df_users['activity_bucket'] = pd.cut(
         df_users['rating_count'], bins=act_bins, labels=act_labels, right=True
     )
-    df_users['activity_bucket'] = df_users['activity_bucket'].cat.add_categories('unknown').fillna('unknown')
 
     user_sparse_feature_columns = ["user_id", "gender", "age", "occupation", "zip_code",
                                     "activity_bucket"]
